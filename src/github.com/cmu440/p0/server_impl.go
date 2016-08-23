@@ -6,60 +6,109 @@ import (
     "net"
     "bufio"
     "fmt"
-    "strconv"
 )
 
 type multiEchoServer struct {
-    num int
+    clients map[string] net.Conn
+    clientMsgs map[string] chan([] byte)
+    listener net.Listener
+    read chan []byte
+    stop bool
 }
 
 // New creates and returns (but does not start) a new MultiEchoServer.
 func New() MultiEchoServer {
-    mes := multiEchoServer{num:0}
-    return mes;
+    mes := &multiEchoServer{
+        clients: make(map[string] net.Conn),
+        clientMsgs: make(map[string] chan([]byte)),
+        read: make(chan([]byte)),
+        stop: false,
+    }
+    return MultiEchoServer(mes);
 }
 
 func (mes *multiEchoServer) Start(port int) error {
-    if port > 65535 || port <= 0 {
-        fmt.Println("port is invalid");
-        panic("port is invalid");
-    }
-    listener, e := net.ListenTCP("tcp", ":" + port);
+    mes.stop = false;
+    listener, e := net.Listen("tcp", fmt.Sprintf(":%d", port));
     if e != nil {
-        panic("listen failed");
+        fmt.Println("listen tcp failed");
+        return e;
     }
-    go func() {
-        for {
-            conn, err := listener.Accept();
-            if err != nil {
-                continue;
-            }
-            mes.num++;
-            go func() {
-                defer conn.Close();
-                var buf [512]byte;
-                for {
-                    len, e := conn.Read(buf);
-                    if e != nil {
-                        break;
-                    }
-                    if len > 0 {
-                        conn.Write(buf);
-                    }
-                }
-
-            }()
-        }
-    }()
+    mes.listener = listener;
+    go mes.handleListen();
+    go mes.handleDistributeMsg();
     return nil;
 }
 
 func (mes *multiEchoServer) Close() {
-    // TODO: implement this!
+    mes.stop = true;
+    mes.listener.Close();
+    for _, conn := range mes.clients{
+        conn.Close();
+    }
 }
 
 func (mes *multiEchoServer) Count() int {
-    return mes.num;
+    return len(mes.clients);
 }
 
 // TODO: add additional methods/functions below!
+func (mes *multiEchoServer) handleConn(conn net.Conn) {
+    go mes.handleRead(conn);
+    go mes.handleWrite(conn);
+}
+
+func (mes *multiEchoServer) handleRead(conn net.Conn) {
+    reader := bufio.NewReader(conn);
+    for {
+        line, e := reader.ReadBytes('\n');
+        if  e != nil{
+            fmt.Println("read close connetion, client : " + conn.RemoteAddr().String());
+            conn.Close();
+            delete(mes.clients, conn.RemoteAddr().String());
+            return;
+        }
+        mes.read <- line;
+    }
+}
+
+func (mes *multiEchoServer) handleWrite(conn net.Conn) {
+    msgChan := mes.clientMsgs[conn.RemoteAddr().String()];
+    for {
+        msg := <- msgChan;
+        _, e := conn.Write(msg);
+        if e != nil {
+            return ;
+        }
+    }
+}
+
+func (mes *multiEchoServer) handleListen() {
+    for {
+        conn, e := mes.listener.Accept();
+        if e != nil {
+            if mes.stop == true {
+                fmt.Println("listen stop")
+                return
+            }
+            continue;
+        }
+        if _, ok := mes.clientMsgs[conn.RemoteAddr().String()]; !ok {
+            mes.clientMsgs[conn.RemoteAddr().String()] = make(chan []byte, 100);
+        }
+        mes.clients[conn.RemoteAddr().String()] = conn;
+        go mes.handleConn(conn);
+    }
+}
+
+func (mes *multiEchoServer) handleDistributeMsg()  {
+    for {
+        line := <- mes.read;
+        for key, _ := range mes.clients {
+            msgChan := mes.clientMsgs[key];
+            if len(msgChan) < 100 {
+                msgChan <- line;
+            }
+        }
+    }
+}

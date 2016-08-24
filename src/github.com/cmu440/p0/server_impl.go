@@ -54,18 +54,14 @@ func (mes *multiEchoServer) Count() int {
 
 // TODO: add additional methods/functions below!
 func (mes *multiEchoServer) handleConn(conn net.Conn) {
-    go mes.handleRead(conn);
     go mes.handleWrite(conn);
-}
-
-func (mes *multiEchoServer) handleRead(conn net.Conn) {
     reader := bufio.NewReader(conn);
     for {
         line, e := reader.ReadBytes('\n');
         if  e != nil{
             fmt.Println("read close connetion, client : " + conn.RemoteAddr().String());
-            conn.Close();
             delete(mes.clients, conn.RemoteAddr().String());
+            conn.Close();
             return;
         }
         mes.read <- line;
@@ -78,7 +74,7 @@ func (mes *multiEchoServer) handleWrite(conn net.Conn) {
         msg := <- msgChan;
         _, e := conn.Write(msg);
         if e != nil {
-            return ;
+            delete(mes.clients, conn.RemoteAddr().String());
         }
     }
 }
